@@ -407,6 +407,61 @@ Newly seen DNS query
 
 // Set default values for GeoIP fields to make output look prettier (optional)
 
+
+
 | default(value="-", field=[FirstIP4Record.country, FirstIP4Record.city, FirstIP4Record.state])
 ```
 
+Failed multiple logins followed by success
+
+```
+// Filter on authentication events
+#event_simpleName=/^(UserLogon|UserLogonFailed2)$/
+
+// Add wildcard filters to reduce the scope if needed. 
+| wildcard(field=aip, pattern=?AgentIP, ignoreCase=true)
+| wildcard(field=aid, pattern=?aid, ignoreCase=true)
+| wildcard(field=UserName, pattern=?UserName, ignoreCase=true)
+
+// Add in Computer Name to results. This is not needed in FLTR or FSR.
+//| $crowdstrike/fltr-core:zComputerName()
+
+// Add another wildcard filters to reduce the scope if needed.
+| wildcard(field=ComputerName, pattern=?ComputerName, ignoreCase=true)
+
+// Filter out usernames that we don't want to alert on.
+| UserName!=/(\$$|^DWM-|LOCAL\sSERVICE|^UMFD-|^$|-|SYSTEM)/
+
+// Make UserNames all lowercase.
+| lower(UserName, as=UserName)
+
+// Make working with events easier and setting auth status
+| case { 
+    #event_simpleName=UserLogonFailed2 
+      | authStatus:="F" ; 
+    #event_simpleName=UserLogon 
+      | authStatus:="S" ;
+  }
+
+// Run a series that makes sure everything is in order and starts with a failure and ends with a success within timeframe. 
+// Change your timeframes here within maxpause and maxduration. 
+| groupBy([UserName, aip], function=series(authStatus, separator="", endmatch={authStatus=S}, maxpause=15min, maxduration=15min, memlimit=1024), limit=max)
+| authStatus=/F*S/i
+| failedLoginCount:=length("authStatus")-1
+
+// Set your failed login count threshold here. 
+| failedLoginCount>=5
+
+// Set the min and max duration for equal or less than above. 
+// Modify min duration to use the test function similar to max duration if you wish to set anything via human readable vs millisecond format.
+| _duration>0
+| test(_duration<duration(15min))
+
+// Format time duration to make readable. 
+| firstAuthSuccess:=@timestamp+_duration
+| formatTime(format="%c", as=firstAuthFailure)
+| formatTime(field=firstAuthSuccess, format="%c", as=firstAuthSuccess)
+| formatDuration(_duration)
+| table([UserName, aip, _duration, firstAuthFailure, firstAuthSuccess, failedLoginCount], limit=1000, sortby=failedLoginCount)
+
+```
